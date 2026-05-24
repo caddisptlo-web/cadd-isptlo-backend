@@ -1,0 +1,8 @@
+node_modules/
+data/cadd.db
+data/cadd.db-journal
+data/cadd.db-wal
+data/cadd.db-shm
+data/backups/
+.env
+*.log

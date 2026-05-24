@@ -1,0 +1,23 @@
+{
+  "name": "ilr-cadd-backend",
+  "version": "1.0.0",
+  "description": "Backend institucional da Plataforma CADD ISPTLO — ILR Academic Solutions",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "init-db": "node scripts/init-db.js",
+    "create-token": "node scripts/create-token.js",
+    "backup": "node scripts/backup.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.19.2",
+    "better-sqlite3": "^11.0.0",
+    "cors": "^2.8.5",
+    "googleapis": "^144.0.0",
+    "nodemailer": "^6.9.13"
+  },
+  "license": "MIT",
+  "author": "ILR : Academic Solutions"
+}
