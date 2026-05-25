@@ -14,7 +14,7 @@
 
 import express from 'express';
 import cors from 'cors';
-import Database from 'better-sqlite3';
+
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -52,9 +52,6 @@ function syncToCloud(srcPath, relPath){
 // --------------------------------------------------------------
 // Base de dados
 // --------------------------------------------------------------
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
 
 // --------------------------------------------------------------
 // Express
