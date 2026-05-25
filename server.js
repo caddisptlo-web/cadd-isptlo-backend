@@ -34,6 +34,41 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 ensureDir(path.dirname(DB_PATH));
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
+db.exec(`
+CREATE TABLE IF NOT EXISTS avaliacoes (
+  id TEXT PRIMARY KEY,
+  bi TEXT,
+  ciclo TEXT,
+  nome TEXT,
+  email TEXT,
+  dei TEXT,
+  categoria TEXT,
+  grau TEXT,
+  regime TEXT,
+  total REAL,
+  nivel TEXT,
+  payload TEXT,
+  submitted_by TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tokens (
+  id TEXT PRIMARY KEY,
+  token TEXT,
+  role TEXT,
+  label TEXT,
+  bi TEXT,
+  active INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  action TEXT,
+  actor TEXT,
+  ts TEXT
+);
+`);
 function safePath(...parts){
   const p = path.join(UPLOAD_DIR, ...parts.map(s => s.replace(/[^a-zA-Z0-9_\-. @]/g,'_')));
   if(!p.startsWith(UPLOAD_DIR)) throw new Error('Path traversal detectado.');
