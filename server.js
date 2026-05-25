@@ -14,7 +14,7 @@
 
 import express from 'express';
 import cors from 'cors';
-
+import Database from 'better-sqlite3';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -31,7 +31,9 @@ const HOST       = process.env.CADD_HOST  || '0.0.0.0';
 
 // Garantir directório de uploads
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-
+ensureDir(path.dirname(DB_PATH));
+const db = new Database(DB_PATH);
+db.pragma('journal_mode = WAL');
 function safePath(...parts){
   const p = path.join(UPLOAD_DIR, ...parts.map(s => s.replace(/[^a-zA-Z0-9_\-. @]/g,'_')));
   if(!p.startsWith(UPLOAD_DIR)) throw new Error('Path traversal detectado.');
