@@ -19,7 +19,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { initDrive, isDriveActive, uploadToDrive, listEvidencias, compartilharComCoordenadora } from './drive.js';
+import { initB2, isB2Active, uploadToB2, listB2, getSignedUrl } from './b2.js';
 import { notificarCADDdeNovaSubmissao, notificarDocenteValidacao } from './email.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -34,41 +34,7 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 ensureDir(path.dirname(DB_PATH));
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
-db.exec(`
-CREATE TABLE IF NOT EXISTS avaliacoes (
-  id TEXT PRIMARY KEY,
-  bi TEXT,
-  ciclo TEXT,
-  nome TEXT,
-  email TEXT,
-  dei TEXT,
-  categoria TEXT,
-  grau TEXT,
-  regime TEXT,
-  total REAL,
-  nivel TEXT,
-  payload TEXT,
-  submitted_by TEXT,
-  created_at TEXT,
-  updated_at TEXT
-);
 
-CREATE TABLE IF NOT EXISTS tokens (
-  id TEXT PRIMARY KEY,
-  token TEXT,
-  role TEXT,
-  label TEXT,
-  bi TEXT,
-  active INTEGER DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS audit_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  action TEXT,
-  actor TEXT,
-  ts TEXT
-);
-`);
 function safePath(...parts){
   const p = path.join(UPLOAD_DIR, ...parts.map(s => s.replace(/[^a-zA-Z0-9_\-. @]/g,'_')));
   if(!p.startsWith(UPLOAD_DIR)) throw new Error('Path traversal detectado.');
@@ -297,7 +263,7 @@ try {
   });
 } catch {}
 
-// Upload de evidência (recebe base64; tenta Drive, fallback local)
+// Upload de evidência (recebe base64 → Backblaze B2 + fallback local)
 app.post('/api/upload', authenticate, express.json({limit:'15mb'}), async (req,res)=>{
   try{
     const {bi, ciclo, tipo, nomeOrig, base64, mime, nome} = req.body;
@@ -307,35 +273,35 @@ app.post('/api/upload', authenticate, express.json({limit:'15mb'}), async (req,r
 
     const safeName = (nome||'docente').replace(/[^a-zA-Z0-9_\- ]/g,'_');
     const biNome = `${bi}_${safeName}`;
-    const fileName = Date.now()+'_'+nomeOrig.replace(/[^a-zA-Z0-9_\-. ]/g,'_');
-    let driveResult = null;
+    const fileName = nomeOrig.replace(/[^a-zA-Z0-9_\-. ]/g,'_');
+    let b2Result = null;
     let localPath = null;
 
-    // 1. Tentar Drive primeiro
-    if(isDriveActive()){
+    // 1. Tentar Backblaze B2 primeiro
+    if(isB2Active()){
       try{
-        driveResult = await uploadToDrive({
+        b2Result = await uploadToB2({
           ciclo, biNome, tipo: tipo||'evidencias',
           fileName, mimeType: mime||'application/octet-stream', buffer: buf
         });
       }catch(err){
-        console.warn('[Upload] Drive falhou, fazendo fallback local:', err.message);
+        console.warn('[Upload] B2 falhou, fazendo fallback local:', err.message);
       }
     }
 
-    // 2. Fallback / sempre: gravar localmente também
+    // 2. Sempre: gravar localmente como backup
     const dir = safePath(ciclo, bi, tipo||'evidencias');
     ensureDir(dir);
-    localPath = path.join(dir, fileName);
+    localPath = path.join(dir, Date.now()+'_'+fileName);
     fs.writeFileSync(localPath, buf);
     syncToCloud(localPath, path.relative(UPLOAD_DIR, localPath));
 
     db.prepare(`INSERT INTO uploads(bi,ciclo,tipo,nome_orig,path,tamanho,mime,ts) VALUES (?,?,?,?,?,?,?,datetime('now'))`)
-      .run(bi, ciclo, tipo||'evidencias', nomeOrig, driveResult?.id || localPath, buf.length, mime||'application/octet-stream');
+      .run(bi, ciclo, tipo||'evidencias', nomeOrig, b2Result?.key || localPath, buf.length, mime||'application/octet-stream');
 
     res.json({
       ok: true,
-      drive: driveResult ? { id: driveResult.id, link: driveResult.webViewLink } : null,
+      b2: b2Result ? { key: b2Result.key, url: b2Result.url } : null,
       local: path.relative(UPLOAD_DIR, localPath),
       size: buf.length
     });
@@ -348,11 +314,15 @@ app.get('/api/evidencias', authenticate, async (req,res)=>{
     const {bi, ciclo, nome} = req.query;
     if(!bi || !ciclo) return res.status(400).json({error:'Faltam bi e ciclo'});
     const biNome = `${bi}_${(nome||'docente').replace(/[^a-zA-Z0-9_\- ]/g,'_')}`;
-    if(isDriveActive()){
+    if(isB2Active()){
       try{
-        const files = await listEvidencias(ciclo, biNome);
-        return res.json({ source:'drive', files });
-      }catch(err){ console.warn('[Drive listar]', err.message); }
+        const files = await listB2({ ciclo, biNome });
+        // Devolver com URLs assinadas (válidas 1h)
+        const filesSigned = await Promise.all(files.map(async f=>({
+          ...f, signedUrl: await getSignedUrl(f.key, 3600)
+        })));
+        return res.json({ source:'b2', files: filesSigned });
+      }catch(err){ console.warn('[B2 listar]', err.message); }
     }
     // Fallback local
     const dir = safePath(ciclo, bi, 'evidencias');
@@ -365,11 +335,13 @@ app.get('/api/evidencias', authenticate, async (req,res)=>{
   }catch(err){ res.status(500).json({error: err.message}); }
 });
 
-// Partilhar pasta Drive com coordenadora (one-time)
-app.post('/api/drive/share', authenticate, requireRole('coord_cadd','admin'), async (req,res)=>{
-  if(!isDriveActive()) return res.status(503).json({error:'Drive não inicializada'});
-  const r = await compartilharComCoordenadora();
-  res.json({ok:!!r, result:r});
+// Endpoint para verificar estado da integração B2
+app.get('/api/storage/status', authenticate, (req,res)=>{
+  res.json({
+    b2: isB2Active(),
+    bucket: process.env.B2_BUCKET_NAME || 'cadd-isptlo',
+    fallback_local: true
+  });
 });
 
 // Homologação
@@ -405,7 +377,7 @@ app.post('/api/sync-cloud', authenticate, requireRole('coord_cadd','admin'), (re
 // --------------------------------------------------------------
 // Boot
 // --------------------------------------------------------------
-await initDrive();
+initB2();
 
 app.listen(PORT, HOST, () => {
   console.log(`\n🪶  ILR : Academic Solutions — Backend CADD ISPTLO`);
